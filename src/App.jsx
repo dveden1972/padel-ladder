@@ -1372,33 +1372,6 @@ export default function PadelLadder() {
                 );
               })()
             )}
-
-            {history.length > 0 && (
-              <div style={styles.historySection}>
-                <div style={styles.historyHeading}>Eerdere weken</div>
-                {groupHistoryByWeek(history, 5).map((w) => (
-                  <div key={w.week} style={styles.historyRow}>
-                    <span style={styles.historyWeek}>Week {w.week}</span>
-                    <span style={styles.historyPairs}>
-                      {w.entries
-                        .map((h) => {
-                          const winner = duoById(h.winnerId);
-                          const loser = duoById(h.duoAId === h.winnerId ? h.duoBId : h.duoAId);
-                          const scoreLabel =
-                            typeof h.scoreWinner === "number"
-                              ? ` (${h.scoreWinner}-${h.scoreLoser})`
-                              : "";
-                          return winner && loser
-                            ? `${duoName(winner)} wint van ${duoName(loser)}${scoreLabel}`
-                            : null;
-                        })
-                        .filter(Boolean)
-                        .join(" · ")}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         )}
 
