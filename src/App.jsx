@@ -1102,7 +1102,6 @@ export default function PadelLadder() {
   return (
     <div style={styles.page}>
       <style>{FONT_STYLE}</style>
-      <div style={styles.bgLines} />
 
       <header style={styles.header}>
         <div style={styles.headerInner}>
@@ -1693,13 +1692,6 @@ const styles = {
     color: "#F6F4EC",
     position: "relative",
     paddingBottom: 60,
-  },
-  bgLines: {
-    position: "absolute",
-    inset: 0,
-    backgroundImage:
-      "repeating-linear-gradient(0deg, rgba(246,244,236,0.035) 0px, rgba(246,244,236,0.035) 1px, transparent 1px, transparent 64px)",
-    pointerEvents: "none",
   },
   header: {
     padding: "48px 20px 24px",
