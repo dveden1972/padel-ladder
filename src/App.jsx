@@ -167,6 +167,12 @@ function formatMatchDateTime(iso) {
   return `${datePart} · ${timePart}`;
 }
 
+// "dd/mm/yyyy", voor de dag-koppen in de Agenda
+function formatDateDMY(dateOrIso) {
+  const d = typeof dateOrIso === "string" ? new Date(dateOrIso) : dateOrIso;
+  return `${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}/${d.getFullYear()}`;
+}
+
 export default function PadelLadder() {
   const [players, setPlayers] = useState([]); // {id, name, email}
   const [duos, setDuos] = useState([]); // {id, playerIds:[a,b], wins, losses, matchesPlayed, position}
@@ -1359,11 +1365,7 @@ export default function PadelLadder() {
                     {dayGroups.map(([dayKey, matches]) => (
                       <div key={dayKey} style={styles.agendaDay}>
                         <div style={styles.agendaDayHeading}>
-                          {new Date(dayKey).toLocaleDateString("nl-NL", {
-                            weekday: "long",
-                            day: "numeric",
-                            month: "long",
-                          })}
+                          {formatDateDMY(new Date(dayKey))}
                         </div>
                         <div style={styles.courtsGrid}>{matches.map(renderMatchCard)}</div>
                       </div>
