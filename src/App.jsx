@@ -180,6 +180,7 @@ export default function PadelLadder() {
   const [now] = useState(() => new Date());
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState("ladder");
+  const [duoFilter, setDuoFilter] = useState(""); // duo-id; "" = alle duo's (gebruikt in Open & Agenda)
   const [isAdmin, setIsAdmin] = useState(false); // session-only, niet opgeslagen
   const [showAdminForm, setShowAdminForm] = useState(false);
   const [adminInput, setAdminInput] = useState("");
@@ -1273,10 +1274,28 @@ export default function PadelLadder() {
             ) : (
               <div>
                 <p style={styles.roundBadgeText}>RONDE {currentRound.roundNumber}</p>
+                <div style={styles.duoFilterRow}>
+                  <select
+                    value={duoFilter}
+                    onChange={(e) => setDuoFilter(e.target.value)}
+                    style={styles.select}
+                  >
+                    <option value="">Alle duo's</option>
+                    {sortedLadder.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {duoName(d)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
                 {(() => {
                   const openMatches = currentRound.matches.filter(
-                    (m) => m.status === "pending" && (!m.court || !m.scheduledAt)
+                    (m) =>
+                      m.status === "pending" &&
+                      (!m.court || !m.scheduledAt) &&
+                      (!duoFilter || m.duoAId === duoFilter || m.duoBId === duoFilter)
                   );
+                  const filteredDuo = duoFilter ? duoById(duoFilter) : null;
                   return openMatches.length > 0 ? (
                     <>
                       <p style={styles.generateText}>
@@ -1288,7 +1307,13 @@ export default function PadelLadder() {
                       </div>
                     </>
                   ) : (
-                    <EmptyState text="Alle wedstrijden van deze ronde zijn ingepland — je vindt ze terug in de Agenda." />
+                    <EmptyState
+                      text={
+                        filteredDuo
+                          ? `Geen openstaande wedstrijden voor ${duoName(filteredDuo)}.`
+                          : "Alle wedstrijden van deze ronde zijn ingepland — je vindt ze terug in de Agenda."
+                      }
+                    />
                   );
                 })()}
 
@@ -1343,13 +1368,47 @@ export default function PadelLadder() {
 
         {tab === "agenda" && (
           <div>
+            {currentRound && currentRound.matches.some((m) => m.court && m.scheduledAt) && (
+              <div style={styles.duoFilterRow}>
+                <select
+                  value={duoFilter}
+                  onChange={(e) => setDuoFilter(e.target.value)}
+                  style={styles.select}
+                >
+                  <option value="">Alle duo's</option>
+                  {sortedLadder.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {duoName(d)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             {!currentRound || currentRound.matches.every((m) => !(m.court && m.scheduledAt)) ? (
               <EmptyState text="Nog geen enkele wedstrijd heeft een baan én tijd. Plan ze in bij 'Open'." />
             ) : (
               (() => {
                 const scheduled = currentRound.matches
-                  .filter((m) => m.court && m.scheduledAt)
+                  .filter(
+                    (m) =>
+                      m.court &&
+                      m.scheduledAt &&
+                      (!duoFilter || m.duoAId === duoFilter || m.duoBId === duoFilter)
+                  )
                   .sort((a, b) => new Date(a.scheduledAt) - new Date(b.scheduledAt));
+
+                if (scheduled.length === 0) {
+                  const filteredDuo = duoById(duoFilter);
+                  return (
+                    <EmptyState
+                      text={
+                        filteredDuo
+                          ? `Geen geplande wedstrijden voor ${duoName(filteredDuo)}.`
+                          : "Geen geplande wedstrijden."
+                      }
+                    />
+                  );
+                }
 
                 const byDay = new Map();
                 for (const m of scheduled) {
@@ -2137,6 +2196,9 @@ const styles = {
     fontSize: 12,
     letterSpacing: "0.1em",
     color: "#F2BE2C",
+    marginBottom: 16,
+  },
+  duoFilterRow: {
     marginBottom: 16,
   },
   adminBypassNote: {
