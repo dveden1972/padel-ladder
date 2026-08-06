@@ -1,53 +1,79 @@
 // De app is oorspronkelijk gebouwd als Claude.ai-artifact en praat met opslag via
-// `window.storage.get/set/delete/list` (zie https://docs.claude.com — dit is een
-// functie die alleen binnen Claude.ai-artifacts bestaat). Deze module bootst diezelfde
-// API na met de browser's localStorage, zodat de rest van de app-code (App.jsx)
-// volledig ongewijzigd kan blijven.
+// `window.storage.get/set/delete/list`. Deze module bootst diezelfde API na, maar
+// dan met een Supabase-tabel (`kv_store`) in plaats van localStorage — zodat alle
+// gebruikers dezelfde, gedeelde data zien. De rest van de app-code (App.jsx)
+// blijft hierdoor volledig ongewijzigd.
 //
-// BELANGRIJKE BEPERKING: localStorage is per browser/apparaat. Twee mensen die de site
-// bezoeken zien dus IEDER HUN EIGEN data, niet dezelfde gedeelde ladderstand. Voor een
-// echt gedeelde ladder (alle leden zien dezelfde stand) heb je een backend/database
-// nodig, bijvoorbeeld Supabase — zie README.md voor hoe je dat er later bij zet.
+// Benodigde tabel in Supabase (zie ook README.md):
+//
+//   create table kv_store (
+//     key text primary key,
+//     value text not null,
+//     updated_at timestamptz not null default now()
+//   );
 
-const PREFIX = "padel-ladder:";
+import { createClient } from "@supabase/supabase-js";
 
-function fullKey(key) {
-  return `${PREFIX}${key}`;
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  console.error(
+    "Supabase-configuratie ontbreekt. Zet VITE_SUPABASE_URL en VITE_SUPABASE_ANON_KEY in " +
+      ".env (kopieer .env.example en vul je eigen projectgegevens in)."
+  );
 }
+
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+const TABLE = "kv_store";
 
 const storage = {
   async get(key) {
-    const raw = localStorage.getItem(fullKey(key));
-    if (raw === null) return null;
-    return { key, value: raw };
+    const { data, error } = await supabase
+      .from(TABLE)
+      .select("value")
+      .eq("key", key)
+      .maybeSingle();
+
+    if (error) {
+      console.error("storage.get failed", error);
+      throw error;
+    }
+    if (!data) return null;
+    return { key, value: data.value };
   },
 
   async set(key, value) {
-    try {
-      localStorage.setItem(fullKey(key), value);
-      return { key, value };
-    } catch (err) {
-      // bijv. localStorage vol of geblokkeerd (privénavigatie in sommige browsers)
-      console.error("storage.set failed", err);
-      return null;
+    const { error } = await supabase
+      .from(TABLE)
+      .upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: "key" });
+
+    if (error) {
+      console.error("storage.set failed", error);
+      return null; // App.jsx checkt op een falsy resultaat bij set-aanroepen
     }
+    return { key, value };
   },
 
   async delete(key) {
-    localStorage.removeItem(fullKey(key));
+    const { error } = await supabase.from(TABLE).delete().eq("key", key);
+
+    if (error) {
+      console.error("storage.delete failed", error);
+      return null;
+    }
     return { key, deleted: true };
   },
 
   async list(prefix = "") {
-    const fullPrefix = fullKey(prefix);
-    const keys = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (k && k.startsWith(fullPrefix)) {
-        keys.push(k.slice(PREFIX.length));
-      }
+    const { data, error } = await supabase.from(TABLE).select("key").like("key", `${prefix}%`);
+
+    if (error) {
+      console.error("storage.list failed", error);
+      throw error;
     }
-    return { keys, prefix };
+    return { keys: (data || []).map((row) => row.key), prefix };
   },
 };
 
