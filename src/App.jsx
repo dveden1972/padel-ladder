@@ -20,6 +20,14 @@ html, body {
 input, select, textarea, button {
   max-width: 100%;
 }
+/* Zonder deze regel erven <button>/<input>/<select>/<textarea> de tekstkleur
+   NIET automatisch over van hun ouder-element (de browser gebruikt dan een
+   eigen systeemkleur, meestal zwart) — ze blijven op de lichte paginatekst
+   vertrouwen zonder dat expliciet te zijn. */
+button, input, select, textarea {
+  color: inherit;
+  font: inherit;
+}
 `;
 
 
@@ -1870,6 +1878,7 @@ const styles = {
     cursor: "pointer",
     textAlign: "left",
     fontFamily: "'Space Grotesk', sans-serif",
+    color: "#F6F4EC",
   },
   duoHistoryBox: {
     background: "rgba(246,244,236,0.03)",
@@ -2146,9 +2155,11 @@ const styles = {
     display: "flex",
     gap: 8,
     marginBottom: 10,
+    flexWrap: "wrap",
   },
   scoreField: {
-    flex: 1,
+    flex: "1 1 100px",
+    minWidth: 0,
     display: "flex",
     flexDirection: "column",
     gap: 4,
@@ -2162,6 +2173,7 @@ const styles = {
   },
   scoreInput: {
     width: "100%",
+    minWidth: 0,
     background: "#0F2C3F",
     border: "1px solid rgba(246,244,236,0.3)",
     borderRadius: 6,
