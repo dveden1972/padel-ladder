@@ -37,7 +37,8 @@ const COURTS = 3;
 const STORAGE_KEY_PLAYERS = "padel-players-v2";
 const STORAGE_KEY_DUOS = "padel-duos-v2";
 const STORAGE_KEY_HISTORY = "padel-history-v2";
-const STORAGE_KEY_CURRENT = "padel-current-round-v1";
+const STORAGE_KEY_CURRENT = "padel-current-round-v1"; // legacy: bevatte precies 1 ronde-object
+const STORAGE_KEY_ROUNDS = "padel-rounds-v1"; // nieuw: array van rondes, meerdere tegelijk mogelijk
 const STORAGE_KEY_ROUND_INFO = "padel-round-info-v1";
 const ROUND_INTERVAL_DAYS = 14; // per 2 weken mag er 1 nieuwe ronde gepland worden
 
@@ -141,6 +142,61 @@ function allPairings(ids) {
   return results;
 }
 
+// Herberekent de volledige ladderstand (positie, wins, losses, gespeelde
+// wedstrijden) door alle geschiedenis-uitslagen in RONDE-volgorde toe te passen
+// — dus op basis van het rondenummer van de wedstrijd, niet de volgorde waarin
+// de uitslag is ingevoerd. Dit is nodig zodra er wedstrijden uit meerdere
+// rondes tegelijk open kunnen staan: als een latere ronde toevallig eerder
+// wordt afgerond dan een eerdere, moet de ladder alsnog hetzelfde resultaat
+// opleveren alsof alles keurig op rondevolgorde was verwerkt. Binnen dezelfde
+// ronde geldt de invoervolgorde (op datum) als stabiele, voorspelbare tie-break.
+function computeLadderFromHistory(duosList, historyList) {
+  const position = new Map();
+  const wins = new Map();
+  const losses = new Map();
+  const played = new Map();
+  duosList.forEach((d) => {
+    // initialPosition is de vaste "ankerpositie" bij aanmaak van het duo; oudere
+    // duo's die dit veld nog niet hebben, vallen terug op hun huidige positie.
+    position.set(d.id, d.initialPosition ?? d.position);
+    wins.set(d.id, 0);
+    losses.set(d.id, 0);
+    played.set(d.id, 0);
+  });
+
+  const ordered = [...historyList].sort((a, b) => {
+    const ra = a.round ?? Infinity;
+    const rb = b.round ?? Infinity;
+    if (ra !== rb) return ra - rb;
+    return new Date(a.date) - new Date(b.date);
+  });
+
+  for (const entry of ordered) {
+    const winnerId = entry.winnerId;
+    const loserId = entry.duoAId === winnerId ? entry.duoBId : entry.duoAId;
+    if (!position.has(winnerId) || !position.has(loserId)) continue; // duo inmiddels verwijderd
+    wins.set(winnerId, wins.get(winnerId) + 1);
+    played.set(winnerId, played.get(winnerId) + 1);
+    losses.set(loserId, losses.get(loserId) + 1);
+    played.set(loserId, played.get(loserId) + 1);
+
+    const wPos = position.get(winnerId);
+    const lPos = position.get(loserId);
+    if (wPos > lPos) {
+      position.set(winnerId, lPos);
+      position.set(loserId, wPos);
+    }
+  }
+
+  return duosList.map((d) => ({
+    ...d,
+    position: position.get(d.id),
+    wins: wins.get(d.id),
+    losses: losses.get(d.id),
+    matchesPlayed: played.get(d.id),
+  }));
+}
+
 // Zet een ISO-datetime om naar de waarde die een <input type="datetime-local">
 // verwacht (lokale tijd, geen tijdzone-suffix).
 function pad2(n) {
@@ -214,7 +270,7 @@ export default function PadelLadder() {
   const [newPlayerEmail, setNewPlayerEmail] = useState("");
   const [duoPlayerA, setDuoPlayerA] = useState("");
   const [duoPlayerB, setDuoPlayerB] = useState("");
-  const [currentRound, setCurrentRound] = useState(null); // persisted: { matches: [...], restDuoIds: [...] }
+  const [rounds, setRounds] = useState([]); // persisted: [{ roundNumber, generatedAt, matches: [...], restDuoIds: [...] }, ...]
   const [roundInfo, setRoundInfo] = useState(null); // persisted: { lastRoundNumber, lastGeneratedAt }
   const [error, setError] = useState("");
   const [scoreEntry, setScoreEntry] = useState({}); // { [matchId]: { winnerId, loserId, scoreWinner, scoreLoser } }
@@ -244,10 +300,44 @@ export default function PadelLadder() {
         setHistory([]);
       }
       try {
-        const c = await window.storage.get(STORAGE_KEY_CURRENT, true);
-        setCurrentRound(c ? JSON.parse(c.value) : null);
+        const r = await window.storage.get(STORAGE_KEY_ROUNDS, true);
+        if (r) {
+          setRounds(JSON.parse(r.value) || []);
+        } else {
+          // Eenmalige migratie vanaf de oude opzet (precies 1 actieve ronde).
+          let legacy = null;
+          try {
+            legacy = await window.storage.get(STORAGE_KEY_CURRENT, true);
+          } catch {
+            legacy = null;
+          }
+          if (legacy) {
+            const legacyRound = JSON.parse(legacy.value);
+            const migrated = legacyRound
+              ? [
+                  {
+                    ...legacyRound,
+                    matches: legacyRound.matches.map((m) => ({
+                      ...m,
+                      roundNumber: m.roundNumber ?? legacyRound.roundNumber,
+                    })),
+                  },
+                ]
+              : [];
+            setRounds(migrated);
+            if (migrated.length > 0) {
+              try {
+                await window.storage.set(STORAGE_KEY_ROUNDS, JSON.stringify(migrated), true);
+              } catch {
+                // niet erg, wordt bij de volgende wijziging alsnog opgeslagen
+              }
+            }
+          } else {
+            setRounds([]);
+          }
+        }
       } catch {
-        setCurrentRound(null);
+        setRounds([]);
       }
       try {
         const r = await window.storage.get(STORAGE_KEY_ROUND_INFO, true);
@@ -286,17 +376,17 @@ export default function PadelLadder() {
     }
   }, []);
 
-  const persistCurrentRound = useCallback(async (next) => {
-    setCurrentRound(next);
+  const persistRounds = useCallback(async (next) => {
+    setRounds(next);
     try {
-      if (next === null) {
+      if (!next || next.length === 0) {
         try {
-          await window.storage.delete(STORAGE_KEY_CURRENT, true);
+          await window.storage.delete(STORAGE_KEY_ROUNDS, true);
         } catch {
           // key mogelijk al afwezig, geen probleem
         }
       } else {
-        await window.storage.set(STORAGE_KEY_CURRENT, JSON.stringify(next), true);
+        await window.storage.set(STORAGE_KEY_ROUNDS, JSON.stringify(next), true);
       }
     } catch {
       setError("Opslaan is niet gelukt. Probeer het opnieuw.");
@@ -400,9 +490,11 @@ export default function PadelLadder() {
         wins: 0,
         losses: 0,
         matchesPlayed: 0,
-        position: nextPosition++,
+        position: nextPosition,
+        initialPosition: nextPosition,
         paused: false,
       });
+      nextPosition++;
     }
 
     if (newPlayers.length === 0 && newDuos.length === 0) {
@@ -452,15 +544,15 @@ export default function PadelLadder() {
     setNewPlayerEmail("");
   }
 
-  // Een duo mag niet meer verwijderd worden zolang het ergens in de lopende
+  // Een duo mag niet meer verwijderd worden zolang het ergens in een open
   // ronde voorkomt — ook niet als de wedstrijd al gespeeld (status "done") of
-  // geannuleerd is. Die wedstrijd blijft namelijk in de Agenda staan (met
-  // datum en eventueel uitslag) totdat er een hele nieuwe ronde wordt
-  // gegenereerd, en heeft dus nog steeds een geldig duo nodig om te tonen.
+  // geannuleerd is, en ook niet als het om een oudere ronde gaat die nog
+  // naast een nieuwere openstaat. Die wedstrijd blijft namelijk in de Agenda
+  // staan (met datum en eventueel uitslag) totdat de bijbehorende ronde
+  // vervangen wordt, en heeft dus nog steeds een geldig duo nodig om te tonen.
   function duoHasScheduledMatch(duoId) {
-    if (!currentRound) return false;
-    return currentRound.matches.some(
-      (m) => m.duoAId === duoId || m.duoBId === duoId
+    return rounds.some((round) =>
+      round.matches.some((m) => m.duoAId === duoId || m.duoBId === duoId)
     );
   }
 
@@ -472,7 +564,7 @@ export default function PadelLadder() {
     const duo = duos.find((d) => d.playerIds.includes(id));
     if (duo && duoHasScheduledMatch(duo.id)) {
       setError(
-        "Deze speler zit in een duo dat onderdeel is van de huidige ronde en kan daarom nog niet verwijderd worden — wacht tot er een nieuwe ronde is gegenereerd."
+        "Deze speler zit in een duo dat wedstrijden heeft staan in de Agenda en kan daarom niet verwijderd worden."
       );
       return;
     }
@@ -512,6 +604,7 @@ export default function PadelLadder() {
         losses: 0,
         matchesPlayed: 0,
         position: duos.length + 1,
+        initialPosition: duos.length + 1,
         paused: false,
       },
     ];
@@ -527,7 +620,7 @@ export default function PadelLadder() {
     }
     if (duoHasScheduledMatch(id)) {
       setError(
-        "Dit duo is onderdeel van de huidige ronde en kan daarom nog niet verwijderd worden — wacht tot er een nieuwe ronde is gegenereerd."
+        "Dit duo heeft wedstrijden staan in de Agenda en kan daarom niet verwijderd worden."
       );
       return;
     }
@@ -547,30 +640,43 @@ export default function PadelLadder() {
     persistDuos(next);
   }
 
-  // Kan alleen een nieuwe ronde genereren als er geen ronde loopt, of als de
-  // lopende ronde volledig is afgehandeld (elke wedstrijd gewonnen of geannuleerd).
-  const roundIsOpen =
-    currentRound && currentRound.matches.some((m) => m.status === "pending");
+  // De meest recent gegenereerde ronde (indien aanwezig). Dit is de enige
+  // ronde waar nog niet-ingeplande wedstrijden in kunnen zitten: elke ronde
+  // moest namelijk al volledig ingepland zijn vóórdat de erna gegenereerd kon
+  // worden (zie latestRoundFullyScheduled hieronder).
+  const latestRound = rounds.length > 0 ? rounds[rounds.length - 1] : null;
+  // Alle wedstrijden uit alle open rondes samen — gebruikt voor de Agenda,
+  // baanconflict-checks en de "mag dit duo verwijderd worden"-check.
+  const allMatches = rounds.flatMap((r) => r.matches);
 
-  // Per 2 weken (14 dagen) mag er 1 nieuwe ronde gegenereerd worden. Een individuele
-  // wedstrijd mag wel verder in de toekomst gepland worden (bijv. over 3 weken) —
-  // deze grens gaat alleen over hoe vaak er een nieuwe ronde bij mag komen.
+  // Een nieuwe ronde mag pas gegenereerd worden als de laatst gegenereerde
+  // ronde volledig is INGEPLAND (elke wedstrijd heeft een baan én een datum/
+  // tijd) — niet per se al afgerond. Zo kunnen er dus wedstrijden uit meerdere
+  // rondes tegelijk in de Agenda staan, bijvoorbeeld omdat een wedstrijd uit
+  // een eerdere ronde nog niet gespeeld is terwijl de volgende ronde er al is.
+  const latestRoundFullyScheduled =
+    !latestRound || latestRound.matches.every((m) => m.court && m.scheduledAt);
+
+  // Per 2 weken (14 dagen) mag er normaal 1 nieuwe ronde gegenereerd worden. Een
+  // individuele wedstrijd mag wel verder in de toekomst gepland worden (bijv.
+  // over 3 weken) — deze grens gaat alleen over hoe vaak er een nieuwe ronde bij
+  // mag komen. De beheerder mag deze limiet altijd omzeilen (zoals al kon).
   const daysSinceLastRound = roundInfo?.lastGeneratedAt
     ? Math.floor((now - new Date(roundInfo.lastGeneratedAt)) / (1000 * 60 * 60 * 24))
     : null;
   const daysUntilNextRound =
     daysSinceLastRound === null ? 0 : Math.max(0, ROUND_INTERVAL_DAYS - daysSinceLastRound);
   const roundLimitReached = daysUntilNextRound > 0;
-  const canGenerateRound = !roundLimitReached || isAdmin;
   const nextRoundNumber = (roundInfo?.lastRoundNumber || 0) + 1;
 
   async function generateProposal() {
-    if (roundIsOpen) return; // extra vangnet, de knop is dan al verborgen
-    if (!canGenerateRound) {
+    if (!isAdmin) {
+      setError("Alleen de beheerder kan een nieuwe ronde genereren.");
+      return;
+    }
+    if (!latestRoundFullyScheduled) {
       setError(
-        `Er mag maar 1 ronde per 2 weken gepland worden. Nog ${daysUntilNextRound} ${
-          daysUntilNextRound === 1 ? "dag" : "dagen"
-        } wachten tot de volgende ronde.`
+        `Ronde ${latestRound.roundNumber} moet eerst volledig ingepland zijn (elke wedstrijd een baan en een datum/tijd) voordat er een nieuwe ronde gegenereerd kan worden.`
       );
       return;
     }
@@ -613,6 +719,7 @@ export default function PadelLadder() {
     }
     const matches = (best || []).map(([a, b]) => ({
       id: uid(),
+      roundNumber: nextRoundNumber,
       court: null, // door het duo zelf te kiezen — verplicht, geen standaardbaan
       duoAId: a,
       duoBId: b,
@@ -620,12 +727,13 @@ export default function PadelLadder() {
       winnerId: null,
       scheduledAt: null, // ISO datetime, door de duo's zelf in te plannen — ook verplicht
     }));
-    await persistCurrentRound({
+    const newRound = {
       roundNumber: nextRoundNumber,
       generatedAt: now.toISOString(),
       matches,
       restDuoIds: resting.map((d) => d.id),
-    });
+    };
+    await persistRounds([...rounds, newRound]);
     await persistRoundInfo({ lastRoundNumber: nextRoundNumber, lastGeneratedAt: now.toISOString() });
   }
 
@@ -640,32 +748,28 @@ export default function PadelLadder() {
     return { label: `${gap} ${gap === 1 ? "week" : "weken"} geleden gespeeld`, fresh: gap >= 3 };
   }
 
+  // Zoekt de wedstrijd (en de ronde waar hij bij hoort) terug over alle open
+  // rondes heen, zodat acties niet langer aannemen dat er maar 1 ronde is.
+  function findRoundForMatch(matchId) {
+    return rounds.find((round) => round.matches.some((m) => m.id === matchId)) || null;
+  }
+
+  // Past een wijziging toe op precies de wedstrijd met dit id, in welke ronde
+  // die ook zit, en geeft de bijgewerkte rondes-array terug (nog niet opgeslagen).
+  function updateMatchInRounds(matchId, updateFn) {
+    return rounds.map((round) => {
+      if (!round.matches.some((m) => m.id === matchId)) return round;
+      return {
+        ...round,
+        matches: round.matches.map((m) => (m.id === matchId ? updateFn(m) : m)),
+      };
+    });
+  }
+
   // Wijst een winnaar aan voor een wedstrijd. Dit ligt daarna vast: de wedstrijd
   // kan niet meer opnieuw gegenereerd of gewijzigd worden.
   async function recordResult(matchId, winnerId, loserId, scoreWinner, scoreLoser) {
-    let nextDuos = duos.map((d) => {
-      if (d.id === winnerId) return { ...d, wins: d.wins + 1, matchesPlayed: d.matchesPlayed + 1 };
-      if (d.id === loserId) return { ...d, losses: d.losses + 1, matchesPlayed: d.matchesPlayed + 1 };
-      return d;
-    });
-    // Ladder-regel:
-    // - Win je van een duo dat BOVEN je stond (lager positienummer)? Je neemt hun plek over.
-    // - Verlies je van een duo dat ONDER je stond? Je zakt naar hun plek.
-    // - Win je van een duo dat al onder je stond, of verlies je van een duo dat al boven je
-    //   stond? Dan verandert er niets — dat was het verwachte resultaat.
-    // Dit komt neer op een simpele positiewissel tussen winnaar en verliezer, maar alleen als
-    // de winnaar vóór de wedstrijd lager op de ladder stond dan de verliezer.
-    const winner = nextDuos.find((d) => d.id === winnerId);
-    const loser = nextDuos.find((d) => d.id === loserId);
-    if (winner && loser && winner.position > loser.position) {
-      const wPos = winner.position;
-      const lPos = loser.position;
-      nextDuos = nextDuos.map((d) => {
-        if (d.id === winnerId) return { ...d, position: lPos };
-        if (d.id === loserId) return { ...d, position: wPos };
-        return d;
-      });
-    }
+    const matchRound = findRoundForMatch(matchId);
 
     const entry = {
       id: uid(),
@@ -676,29 +780,38 @@ export default function PadelLadder() {
       scoreLoser,
       date: now.toISOString(),
       week: getISOWeek(now),
-      round: currentRound?.roundNumber || null,
+      round: matchRound?.roundNumber || null,
     };
+    const nextHistory = [...history, entry];
+    // Ladder-regel: win je van een duo dat BOVEN je stond (lager positienummer),
+    // dan neem je hun plek over (en zij die van jou); verlies je van een duo dat
+    // al onder je stond, dan verandert er niets. Omdat er nu wedstrijden uit
+    // meerdere rondes tegelijk open kunnen staan, wordt de hele ladder opnieuw
+    // berekend in RONDE-volgorde in plaats van gewoon deze ene wissel toe te
+    // passen — zo maakt het niet uit of een latere ronde toevallig eerder wordt
+    // afgerond dan een eerdere (zie computeLadderFromHistory hierboven).
+    const nextDuos = computeLadderFromHistory(duos, nextHistory);
+
+    const nextRounds = updateMatchInRounds(matchId, (m) => ({
+      ...m,
+      status: "done",
+      winnerId,
+      scoreWinner,
+      scoreLoser,
+    }));
 
     // Na elkaar opslaan (niet tegelijk) om de opslag-snelheidslimiet niet te raken.
     await persistDuos(nextDuos);
-    await persistHistory([...history, entry]);
-    if (currentRound) {
-      const nextMatches = currentRound.matches.map((m) =>
-        m.id === matchId ? { ...m, status: "done", winnerId, scoreWinner, scoreLoser } : m
-      );
-      await persistCurrentRound({ ...currentRound, matches: nextMatches });
-    }
+    await persistHistory(nextHistory);
+    await persistRounds(nextRounds);
   }
 
   // Annuleert een wedstrijd: geen winnaar, geen invloed op de ladder. De
   // betrokken duo's tellen niet mee als "gespeeld" en komen dus eerder weer
   // in aanmerking bij de volgende ronde.
   function cancelMatch(matchId) {
-    if (!currentRound) return;
-    const nextMatches = currentRound.matches.map((m) =>
-      m.id === matchId ? { ...m, status: "cancelled" } : m
-    );
-    persistCurrentRound({ ...currentRound, matches: nextMatches });
+    const nextRounds = updateMatchInRounds(matchId, (m) => ({ ...m, status: "cancelled" }));
+    persistRounds(nextRounds);
   }
 
   // Stap 1: winnaar kiezen — toont daarna de invoervelden voor de stand.
@@ -746,11 +859,11 @@ export default function PadelLadder() {
 
   // Legt vast wanneer een wedstrijd gespeeld gaat worden (of maakt dit weer leeg).
   function setMatchSchedule(matchId, isoDateTime) {
-    if (!currentRound) return;
-    const nextMatches = currentRound.matches.map((m) =>
-      m.id === matchId ? { ...m, scheduledAt: isoDateTime || null } : m
-    );
-    persistCurrentRound({ ...currentRound, matches: nextMatches });
+    const nextRounds = updateMatchInRounds(matchId, (m) => ({
+      ...m,
+      scheduledAt: isoDateTime || null,
+    }));
+    persistRounds(nextRounds);
   }
 
   // Geeft de (nog niet per se bevestigde) datum/tijd-selectie voor een wedstrijd terug.
@@ -782,17 +895,18 @@ export default function PadelLadder() {
 
   // Laat het duo zelf de baan kiezen/wijzigen (baan 1, 2 of 3).
   function setMatchCourt(matchId, court) {
-    if (!currentRound) return;
-    const nextMatches = currentRound.matches.map((m) =>
-      m.id === matchId ? { ...m, court: court ? Number(court) : null } : m
-    );
-    persistCurrentRound({ ...currentRound, matches: nextMatches });
+    const nextRounds = updateMatchInRounds(matchId, (m) => ({
+      ...m,
+      court: court ? Number(court) : null,
+    }));
+    persistRounds(nextRounds);
   }
 
-  // Checkt of een andere openstaande wedstrijd dezelfde baan én hetzelfde tijdstip heeft.
+  // Checkt of een andere openstaande wedstrijd (uit welke open ronde dan ook)
+  // dezelfde baan én hetzelfde tijdstip heeft.
   function hasCourtConflict(match) {
-    if (!currentRound || !match.scheduledAt || !match.court) return false;
-    return currentRound.matches.some(
+    if (!match.scheduledAt || !match.court) return false;
+    return allMatches.some(
       (m) =>
         m.id !== match.id &&
         m.status === "pending" &&
@@ -821,6 +935,7 @@ export default function PadelLadder() {
 
     return (
       <div key={m.id} style={styles.courtCard}>
+        {m.roundNumber && <div style={styles.roundTag}>RONDE {m.roundNumber}</div>}
         <div style={styles.matchup}>
           <div style={styles.matchupDuo}>{duoName(duoA)}</div>
           <div style={styles.vs}>VS</div>
@@ -1050,7 +1165,8 @@ export default function PadelLadder() {
       players,
       duos,
       history,
-      currentRound,
+      rounds,
+      roundInfo,
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -1094,11 +1210,18 @@ export default function PadelLadder() {
     await persistPlayers(data.players);
     await persistDuos(data.duos);
     await persistHistory(data.history);
-    await persistCurrentRound(data.currentRound || null);
+    // Ondersteunt zowel nieuwe back-ups (rounds: [...]) als oudere back-ups van
+    // vóór deze functie (currentRound: {...}, precies 1 ronde).
+    const importedRounds = Array.isArray(data.rounds)
+      ? data.rounds
+      : data.currentRound
+      ? [data.currentRound]
+      : [];
+    await persistRounds(importedRounds);
     await persistRoundInfo(data.roundInfo || null);
   }
 
-  // Wist alle data (spelers, duo's, geschiedenis, lopende ronde) — handig om schoon te
+  // Wist alle data (spelers, duo's, geschiedenis, open rondes) — handig om schoon te
   // kunnen testen. Alleen beschikbaar voor de beheerder, met een bevestiging in de app zelf
   // (native browser-dialogen zoals window.confirm werken niet betrouwbaar in dit artifact).
   async function performReset() {
@@ -1107,7 +1230,7 @@ export default function PadelLadder() {
     await persistPlayers([]);
     await persistDuos([]);
     await persistHistory([]);
-    await persistCurrentRound(null);
+    await persistRounds([]);
     await persistRoundInfo(null);
   }
 
@@ -1268,19 +1391,24 @@ export default function PadelLadder() {
 
         {tab === "week" && (
           <div>
-            {!currentRound ? (
+            {!latestRound ? (
               <div style={styles.generateBox}>
                 <p style={styles.generateText}>
                   Genereer een voorstel voor Ronde {nextRoundNumber} (week {getISOWeek(now)}).
                   Duo's die de langste tijd niet speelden krijgen voorrang, en combinaties worden
                   zo gekozen dat er zo min mogelijk herhaling is. Eenmaal gegenereerd liggen de
                   wedstrijden vast: kies per wedstrijd een baan en een tijdstip, en wijs daarna via
-                  de Agenda de winnaar aan. Er kan maar 1 ronde per 2 weken gepland worden — een
-                  losse wedstrijd mag daarbinnen best verder in de toekomst staan.
+                  de Agenda de winnaar aan. Zodra alle wedstrijden van een ronde zijn ingepland,
+                  mag de beheerder alvast een volgende ronde genereren — ook als deze ronde nog
+                  niet is afgerond.
                 </p>
-                {canGenerateRound ? (
+                {!isAdmin ? (
+                  <p style={styles.roundHint}>
+                    Alleen de beheerder kan een nieuwe ronde genereren.
+                  </p>
+                ) : (
                   <>
-                    {roundLimitReached && isAdmin && (
+                    {roundLimitReached && (
                       <p style={styles.adminBypassNote}>
                         <Unlock size={12} style={{ marginRight: 6 }} />
                         Beheerder: 2-wekenlimiet omzeild ({daysUntilNextRound}{" "}
@@ -1292,16 +1420,11 @@ export default function PadelLadder() {
                       Genereer wedstrijden
                     </button>
                   </>
-                ) : (
-                  <p style={styles.roundHint}>
-                    Nog {daysUntilNextRound} {daysUntilNextRound === 1 ? "dag" : "dagen"} wachten
-                    tot Ronde {nextRoundNumber} gepland kan worden.
-                  </p>
                 )}
               </div>
             ) : (
               <div>
-                <p style={styles.roundBadgeText}>RONDE {currentRound.roundNumber}</p>
+                <p style={styles.roundBadgeText}>RONDE {latestRound.roundNumber}</p>
                 <div style={styles.duoFilterRow}>
                   <select
                     value={duoFilter}
@@ -1317,7 +1440,7 @@ export default function PadelLadder() {
                   </select>
                 </div>
                 {(() => {
-                  const openMatches = currentRound.matches.filter(
+                  const openMatches = latestRound.matches.filter(
                     (m) =>
                       m.status === "pending" &&
                       (!m.court || !m.scheduledAt) &&
@@ -1345,11 +1468,11 @@ export default function PadelLadder() {
                   );
                 })()}
 
-                {currentRound.restDuoIds.length > 0 && (
+                {latestRound.restDuoIds.length > 0 && (
                   <div style={styles.restBox}>
                     <div style={styles.restLabel}>Rust deze week</div>
                     <div style={styles.restList}>
-                      {currentRound.restDuoIds.map((id) => {
+                      {latestRound.restDuoIds.map((id) => {
                         const d = duoById(id);
                         if (!d) return null;
                         return (
@@ -1363,15 +1486,19 @@ export default function PadelLadder() {
                   </div>
                 )}
 
-                {roundIsOpen ? (
+                {!latestRoundFullyScheduled ? (
                   <p style={styles.roundHint}>
-                    Zodra je een datum en tijd instelt, verdwijnt een wedstrijd hiervandaan en
-                    vind je 'm terug in de Agenda. Een nieuwe ronde genereren kan pas als alles is
-                    afgehandeld.
+                    Zodra bij elke wedstrijd hierboven een baan én een datum/tijd zijn ingesteld,
+                    mag de beheerder een nieuwe ronde genereren — ook als deze ronde nog niet is
+                    afgerond.
                   </p>
-                ) : canGenerateRound ? (
+                ) : !isAdmin ? (
+                  <p style={styles.roundHint}>
+                    Alleen de beheerder kan een nieuwe ronde genereren.
+                  </p>
+                ) : (
                   <div style={styles.weekActions}>
-                    {roundLimitReached && isAdmin && (
+                    {roundLimitReached && (
                       <p style={styles.adminBypassNote}>
                         <Unlock size={12} style={{ marginRight: 6 }} />
                         Beheerder: 2-wekenlimiet omzeild
@@ -1382,12 +1509,6 @@ export default function PadelLadder() {
                       Ronde {nextRoundNumber} genereren
                     </button>
                   </div>
-                ) : (
-                  <p style={styles.roundHint}>
-                    Nog {daysUntilNextRound} {daysUntilNextRound === 1 ? "dag" : "dagen"} wachten
-                    tot Ronde {nextRoundNumber} gepland kan worden — er mag maar 1 ronde per 2
-                    weken.
-                  </p>
                 )}
               </div>
             )}
@@ -1396,7 +1517,7 @@ export default function PadelLadder() {
 
         {tab === "agenda" && (
           <div>
-            {currentRound && currentRound.matches.some((m) => m.court && m.scheduledAt) && (
+            {allMatches.some((m) => m.court && m.scheduledAt) && (
               <div style={styles.duoFilterRow}>
                 <select
                   value={duoFilter}
@@ -1412,11 +1533,11 @@ export default function PadelLadder() {
                 </select>
               </div>
             )}
-            {!currentRound || currentRound.matches.every((m) => !(m.court && m.scheduledAt)) ? (
+            {allMatches.every((m) => !(m.court && m.scheduledAt)) ? (
               <EmptyState text="Nog geen enkele wedstrijd heeft een baan én tijd. Plan ze in bij 'Open'." />
             ) : (
               (() => {
-                const scheduled = currentRound.matches
+                const scheduled = allMatches
                   .filter(
                     (m) =>
                       m.court &&
@@ -1508,7 +1629,7 @@ export default function PadelLadder() {
                   const lockTitle = !isAdmin
                     ? "Alleen de beheerder kan spelers verwijderen."
                     : scheduleLocked
-                    ? "Onderdeel van de huidige ronde — kan niet verwijderd worden"
+                    ? "Heeft wedstrijden staan in de Agenda — kan niet verwijderd worden"
                     : undefined;
                   return (
                     <div key={p.id} style={styles.manageRow}>
@@ -1586,7 +1707,7 @@ export default function PadelLadder() {
                   const lockTitle = !isAdmin
                     ? "Alleen de beheerder kan duo's verwijderen."
                     : scheduleLocked
-                    ? "Onderdeel van de huidige ronde — kan niet verwijderd worden"
+                    ? "Heeft wedstrijden staan in de Agenda — kan niet verwijderd worden"
                     : undefined;
                   return (
                     <div key={d.id} style={styles.manageRow}>
@@ -2032,6 +2153,14 @@ const styles = {
     fontSize: 11,
     color: "#E08A6E",
     fontFamily: "'Space Grotesk', sans-serif",
+  },
+  roundTag: {
+    textAlign: "center",
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: 10.5,
+    letterSpacing: "0.08em",
+    color: "rgba(246,244,236,0.4)",
+    marginBottom: 6,
   },
   matchup: { textAlign: "center", marginBottom: 10 },
   matchupDuo: { fontWeight: 700, fontSize: 17, lineHeight: 1.3 },
