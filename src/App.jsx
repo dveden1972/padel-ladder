@@ -1121,6 +1121,9 @@ export default function PadelLadder() {
   }
 
   const sortedLadder = [...duos].sort((a, b) => a.position - b.position);
+  const duosAlphabetical = [...duos].sort((a, b) =>
+    duoName(a).localeCompare(duoName(b), "nl")
+  );
   const assigned = assignedPlayerIds();
   const availableForA = players.filter((p) => !assigned.has(p.id) && p.id !== duoPlayerB);
   const availableForB = players.filter((p) => !assigned.has(p.id) && p.id !== duoPlayerA);
@@ -1306,7 +1309,7 @@ export default function PadelLadder() {
                     style={styles.select}
                   >
                     <option value="">Alle duo's</option>
-                    {sortedLadder.map((d) => (
+                    {duosAlphabetical.map((d) => (
                       <option key={d.id} value={d.id}>
                         {duoName(d)}
                       </option>
@@ -1401,7 +1404,7 @@ export default function PadelLadder() {
                   style={styles.select}
                 >
                   <option value="">Alle duo's</option>
-                  {sortedLadder.map((d) => (
+                  {duosAlphabetical.map((d) => (
                     <option key={d.id} value={d.id}>
                       {duoName(d)}
                     </option>
