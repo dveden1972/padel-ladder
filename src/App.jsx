@@ -3,6 +3,23 @@ import { Plus, Trash2, Shuffle, Trophy, Users, X, Check, RotateCcw, UserPlus, Li
 
 const FONT_STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+/* Mobiel-vriendelijke basis: zonder box-sizing: border-box tellen padding en
+   border bij de opgegeven breedte op, waardoor velden/knoppen met width:100%
+   net buiten hun vak vallen — op een smal telefoonscherm valt dat meteen op
+   als een scheve uitlijning of lichte horizontale overflow. */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+html, body {
+  margin: 0;
+  padding: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+input, select, textarea, button {
+  max-width: 100%;
+}
 `;
 
 
@@ -2033,6 +2050,7 @@ const styles = {
     display: "flex",
     gap: 8,
     marginBottom: 12,
+    flexWrap: "wrap",
   },
   scheduleDateInput: {
     flex: "1 1 60%",
@@ -2200,6 +2218,7 @@ const styles = {
   },
   duoFilterRow: {
     marginBottom: 16,
+    display: "flex",
   },
   adminBypassNote: {
     display: "flex",
